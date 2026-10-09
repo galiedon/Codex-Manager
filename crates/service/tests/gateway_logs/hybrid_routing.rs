@@ -218,8 +218,8 @@ fn rejected_root_array_request_stores_only_redacted_client_payload() {
     };
     let parsed: serde_json::Value =
         serde_json::from_str(&captured.payload).expect("captured root array");
-    assert_eq!(parsed[0]["api_key"], "[REDACTED]");
-    assert_eq!(parsed[0]["nested"]["password"], "[REDACTED]");
+    assert_eq!(parsed["capture_policy"], "structure_only_v1");
+    assert_eq!(parsed["body_format"], "json_array");
     assert!(!captured.payload.contains("sk-dummy-secret"));
     assert!(!captured.payload.contains("dummy-password"));
 }
@@ -812,11 +812,13 @@ fn hybrid_aggregate_only_streams_chat_completions_tool_calls_from_aggregate_api(
         .find_request_log_payload_by_trace_id(&trace_id, &attempts[0].stage)
         .expect("read captured attempt")
         .expect("distinct upstream payload");
+    let summary: serde_json::Value = serde_json::from_str(&captured.payload).unwrap();
+    assert_eq!(summary["capture_policy"], "structure_only_v1");
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&captured.payload).unwrap(),
-        aggregate_body,
-        "decoded upstream attempt must match the mock's received body"
+        summary["input_items"],
+        aggregate_body["messages"].as_array().unwrap().len()
     );
+    assert!(summary.get("messages").is_none());
 }
 
 #[test]

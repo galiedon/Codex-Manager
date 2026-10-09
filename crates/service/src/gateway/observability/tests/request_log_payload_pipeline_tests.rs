@@ -382,14 +382,30 @@ fn request_log_payload_queue_keeps_capture_order_across_spill() {
         .find_request_log_payload_manifest("trc_order_2", PAYLOAD_STAGE_CLIENT)
         .unwrap()
         .unwrap();
-    assert_eq!(second.parent_trace_id.as_deref(), Some("trc_order_1"));
-    assert_eq!(second.shared_prefix_len, 1);
+    assert!(second.parent_trace_id.is_none());
+    assert_eq!(second.shared_prefix_len, 0);
+    let second_summary = storage
+        .load_request_log_payload_full("trc_order_2", PAYLOAD_STAGE_CLIENT)
+        .unwrap()
+        .unwrap();
+    assert!(second_summary
+        .fields
+        .iter()
+        .any(|(key, value)| key == "input_items" && value == "3"));
     let third = storage
         .find_request_log_payload_manifest("trc_order_3", PAYLOAD_STAGE_CLIENT)
         .unwrap()
         .unwrap();
-    assert_eq!(third.parent_trace_id.as_deref(), Some("trc_order_2"));
-    assert_eq!(third.shared_prefix_len, 3);
+    assert!(third.parent_trace_id.is_none());
+    assert_eq!(third.shared_prefix_len, 0);
+    let third_summary = storage
+        .load_request_log_payload_full("trc_order_3", PAYLOAD_STAGE_CLIENT)
+        .unwrap()
+        .unwrap();
+    assert!(third_summary
+        .fields
+        .iter()
+        .any(|(key, value)| key == "input_items" && value == "5"));
     wait_until("memory mode resumed", || {
         !shared.snapshot_stats(None).spilling
     });
@@ -844,7 +860,8 @@ fn request_log_payload_queue_holds_pre_clear_handoff_jobs_off_disk() {
     wait_until("post-clear job spilled", || {
         shared.snapshot_stats(None).spilled_total == 1
     });
-    assert!(spill_files_contain(&dir, b"after-clear"));
+    assert!(spill_files_contain(&dir, b"trc_hold_c"));
+    assert!(!spill_files_contain(&dir, b"after-clear"));
     assert!(!spill_files_contain(&dir, b"secret-before-clear"));
     shared.purge_after_clear(Some(seq), Some(generation));
     wait_until("held job discarded", || {
@@ -1098,15 +1115,12 @@ fn request_log_payload_queue_redacts_spilled_jobs_before_they_reach_the_disk() {
     // Fills the memory budget; the gated writer holds it, so the next jobs
     // spill.
     shared.submit(first);
-    let body = r#"{"model":"m","api_key":"sk-spill-body-secret","input":[{"role":"user","content":"hi","authorization":"Bearer sk-spill-item-secret"}]}"#;
+    let body = r#"{"model":"m","api_key":"sk-spill-body-secret","instructions":"sk-spill-instructions","input":[{"role":"user","content":"sk-spill-conversation","authorization":"Bearer sk-spill-item-secret"},{"type":"reasoning","encrypted_content":"sk-spill-cipher"}]}"#;
     // A separate wire body (e.g. compressed) that also holds the secret.
     let wire = Bytes::from_static(b"\x28\xb5\x2f\xfd compressed sk-spill-wire-secret");
-    shared.submit(redacting_upstream_job(
-        "trc_red_preview",
-        body,
-        true,
-        wire.clone(),
-    ));
+    let mut unredacted_job = redacting_upstream_job("trc_red_preview", body, true, wire.clone());
+    unredacted_job.redact = false;
+    shared.submit(unredacted_job);
     wait_until("preview job spilled", || {
         shared.snapshot_stats(None).spilled_total == 1
     });
@@ -1123,6 +1137,9 @@ fn request_log_payload_queue_redacts_spilled_jobs_before_they_reach_the_disk() {
         &b"sk-spill-body-secret"[..],
         b"sk-spill-item-secret",
         b"sk-spill-wire-secret",
+        b"sk-spill-instructions",
+        b"sk-spill-conversation",
+        b"sk-spill-cipher",
     ] {
         assert!(
             !spill_files_contain(&dir, secret),
@@ -1130,7 +1147,7 @@ fn request_log_payload_queue_redacts_spilled_jobs_before_they_reach_the_disk() {
             String::from_utf8_lossy(secret)
         );
     }
-    assert!(spill_files_contain(&dir, b"[REDACTED]"));
+    assert!(spill_files_contain(&dir, b"structure_only_v1"));
 
     pipeline.gate.grant(100);
     wait_until("spilled jobs replayed", || {
@@ -1142,7 +1159,7 @@ fn request_log_payload_queue_redacts_spilled_jobs_before_they_reach_the_disk() {
         .expect("preview replayed");
     assert!(preview.redacted);
     assert!(!preview.payload.contains("sk-spill"), "{}", preview.payload);
-    assert!(preview.payload.contains("[REDACTED]"));
+    assert!(preview.payload.contains("structure_only_v1"));
     assert_eq!(preview.body_hash, bytes_hash(body.as_bytes()));
     assert_eq!(preview.payload_bytes, body.len() as i64);
     let full = storage
@@ -1151,7 +1168,7 @@ fn request_log_payload_queue_redacts_spilled_jobs_before_they_reach_the_disk() {
         .expect("manifest replayed");
     let stored_text = format!("{:?}{:?}", full.fields, full.items);
     assert!(!stored_text.contains("sk-spill"), "{stored_text}");
-    assert!(stored_text.contains("[REDACTED]"));
+    assert!(stored_text.contains("structure_only_v1"));
     assert_eq!(full.manifest.body_hash, bytes_hash(body.as_bytes()));
     assert_eq!(full.manifest.payload_bytes, body.len() as i64);
     for trace_id in ["trc_red_preview", "trc_red_full"] {

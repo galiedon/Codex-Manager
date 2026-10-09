@@ -123,4 +123,48 @@ fn search_history_http_forwarding_and_sse_error_logging_regression() {
         );
         thread::sleep(Duration::from_millis(20));
     }
+    // Real local HTTP capture proves both stages retain the repair evidence
+    // without persisting the forwarded history or encrypted reasoning.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut verified = false;
+        for log in storage.list_request_logs(None, 100).unwrap() {
+            let Some(trace_id) = log.trace_id else {
+                continue;
+            };
+            let Some(client) = storage
+                .find_request_log_payload_by_trace_id(&trace_id, "client")
+                .unwrap()
+            else {
+                continue;
+            };
+            let client_value: Value = serde_json::from_str(&client.payload).unwrap();
+            assert_eq!(client_value["capture_policy"], "structure_only_v1");
+            assert!(!client.payload.contains("synthetic-test-value"));
+            assert!(client_value.get("input").is_none());
+            if client_value["completed_web_search_calls"] == 4 && client_value["tools_count"] == 0 {
+                if let Some(upstream) = storage
+                    .find_request_log_payload_by_trace_id(&trace_id, "upstream")
+                    .unwrap()
+                {
+                    let upstream_value: Value = serde_json::from_str(&upstream.payload).unwrap();
+                    assert_eq!(client_value["tool_choice"], "auto");
+                    assert_eq!(upstream_value["tool_choice"], "none");
+                    assert_eq!(upstream_value["web_search_declarations"], 1);
+                    assert_eq!(upstream_value["completed_web_search_calls"], 4);
+                    assert!(!upstream.payload.contains("synthetic-test-value"));
+                    assert!(upstream_value.get("input").is_none());
+                    verified = true;
+                }
+            }
+        }
+        if verified {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "private structure capture must retain repair evidence"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
 }

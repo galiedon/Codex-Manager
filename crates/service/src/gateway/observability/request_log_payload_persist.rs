@@ -147,6 +147,12 @@ pub(crate) fn prepare_request_log_payload(job: &RequestLogPayloadJob) -> Prepare
         Some(original) => (original.body_sha256.clone(), original.body_len as i64),
         None => (bytes_hash(&job.body), job.body.len() as i64),
     };
+    // Privacy is a mandatory storage boundary, independent of persisted
+    // preview/redaction switches. The forwarding body is never changed.
+    let mut safe_job = job.clone();
+    safe_job.body = super::structure::structure_only_body(&job.body);
+    safe_job.redact = true;
+    let job = &safe_job;
     let body = if job.preview {
         let text = preview_payload_text(&job.body, job.redact);
         let (payload, truncated) =

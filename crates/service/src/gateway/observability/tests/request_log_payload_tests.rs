@@ -143,9 +143,9 @@ fn preview_redacts_root_array_before_rejected_request_can_be_logged() {
         .find_request_log_payload_by_trace_id("trc_rejected_array", PAYLOAD_STAGE_CLIENT)
         .expect("load preview")
         .expect("capture before request validation");
-    let parsed: Value = serde_json::from_str(&stored.payload).expect("valid array");
-    assert_eq!(parsed[0]["api_key"], "[REDACTED]");
-    assert_eq!(parsed[0]["nested"]["password"], "[REDACTED]");
+    let parsed: Value = serde_json::from_str(&stored.payload).expect("valid summary");
+    assert_eq!(parsed["body_format"], "json_array");
+    assert_eq!(parsed["capture_policy"], "structure_only_v1");
     assert!(!stored.payload.contains("sk-dummy-secret"));
     assert!(!stored.payload.contains("dummy-password"));
     assert!(stored.redacted);
@@ -200,12 +200,13 @@ fn preview_mode_stores_redacted_capped_preview() {
     assert!(!stored.payload_truncated);
     assert!(stored.redacted);
     let parsed: serde_json::Value = serde_json::from_str(&stored.payload).expect("json");
-    assert_eq!(parsed["api_key"], "[REDACTED]");
-    assert_eq!(parsed["model"], "gpt-6-astra");
+    assert_eq!(parsed["capture_policy"], "structure_only_v1");
+    assert!(parsed.get("api_key").is_none());
+    assert!(parsed.get("model").is_none());
 }
 
 #[test]
-fn preview_mode_without_redaction_keeps_original_bytes() {
+fn preview_mode_without_redaction_still_suppresses_original_bytes() {
     let storage = storage();
     let body = br#"{"model":"gpt-6-astra", "api_key":"sk-secret"}"#;
     persist_request_log_payload(&storage, job("trc_raw_preview", body, false, true));
@@ -213,8 +214,10 @@ fn preview_mode_without_redaction_keeps_original_bytes() {
         .find_request_log_payload_by_trace_id("trc_raw_preview", PAYLOAD_STAGE_UPSTREAM)
         .expect("read payload")
         .expect("payload row exists");
-    assert!(!stored.redacted);
-    assert_eq!(stored.payload.as_bytes(), body);
+    assert!(stored.redacted);
+    assert!(!stored.payload.contains("sk-secret"));
+    assert!(stored.payload.contains("structure_only_v1"));
+    assert_eq!(stored.body_hash, bytes_hash(body));
 }
 
 #[test]
@@ -229,13 +232,14 @@ fn preview_mode_truncates_large_bodies() {
         .find_request_log_payload_by_trace_id("trc_big", PAYLOAD_STAGE_UPSTREAM)
         .expect("read payload")
         .expect("payload row exists");
-    assert!(stored.payload_truncated);
-    assert_eq!(stored.payload.len(), REQUEST_LOG_PAYLOAD_PREVIEW_MAX_BYTES);
+    assert!(!stored.payload_truncated);
+    assert!(stored.payload.len() < REQUEST_LOG_PAYLOAD_PREVIEW_MAX_BYTES);
+    assert!(!stored.payload.contains(&"x".repeat(100)));
     assert_eq!(stored.payload_bytes, body.len() as i64);
 }
 
 #[test]
-fn full_mode_stores_untruncated_body_and_shares_conversation_prefix() {
+fn full_mode_stores_only_structure_even_with_redaction_disabled() {
     let storage = storage();
     let big_text = "y".repeat(REQUEST_LOG_PAYLOAD_PREVIEW_MAX_BYTES * 3);
     let first = format!(
@@ -264,29 +268,27 @@ fn full_mode_stores_untruncated_body_and_shares_conversation_prefix() {
         .find_request_log_payload_manifest("trc_full_2", PAYLOAD_STAGE_UPSTREAM)
         .expect("read manifest")
         .expect("manifest exists");
-    assert_eq!(manifest.parent_trace_id.as_deref(), Some("trc_full_1"));
-    assert_eq!(manifest.shared_prefix_len, 1);
-    assert_eq!(manifest.item_count, 3);
-    assert_eq!(manifest.list_field.as_deref(), Some("input"));
-    assert!(!manifest.redacted);
+    assert!(manifest.parent_trace_id.is_none());
+    assert_eq!(manifest.shared_prefix_len, 0);
+    assert_eq!(manifest.item_count, 0);
+    assert!(manifest.list_field.is_none());
+    assert!(manifest.redacted);
 
     let full = storage
         .load_request_log_payload_full("trc_full_2", PAYLOAD_STAGE_UPSTREAM)
         .expect("load")
         .expect("exists");
     assert!(full.complete);
-    assert_eq!(full.items.len(), 3);
-    let first_item: serde_json::Value = serde_json::from_str(&full.items[0]).expect("item json");
-    assert_eq!(
-        first_item["content"].as_str().map(str::len),
-        Some(big_text.len())
-    );
-    let api_key = full
+    assert!(full.items.is_empty());
+    let input_items = full
         .fields
         .iter()
-        .find(|(name, _)| name == "api_key")
+        .find(|(name, _)| name == "input_items")
         .map(|(_, value)| value.as_str());
-    assert_eq!(api_key, Some("\"sk-secret\""));
+    assert_eq!(input_items, Some("3"));
+    let stored = format!("{:?}", full.fields);
+    assert!(!stored.contains("sk-secret"));
+    assert!(!stored.contains(&big_text));
 }
 
 #[test]
@@ -358,7 +360,11 @@ fn cached_parent_is_not_reused_after_retention_pruning() {
         .expect("later request kept");
     assert!(full.complete);
     assert!(full.manifest.parent_trace_id.is_none());
-    assert_eq!(full.items.len(), 2);
+    assert!(full.items.is_empty());
+    assert!(full
+        .fields
+        .iter()
+        .any(|(name, value)| name == "input_items" && value == "2"));
 }
 
 #[test]
@@ -371,16 +377,18 @@ fn full_mode_redaction_masks_fields_and_items() {
         .expect("load")
         .expect("exists");
     assert!(full.manifest.redacted);
-    assert_eq!(full.manifest.list_field.as_deref(), Some("messages"));
+    assert!(full.manifest.list_field.is_none());
     let api_key = full
         .fields
         .iter()
         .find(|(name, _)| name == "api_key")
         .map(|(_, value)| value.clone());
-    assert_eq!(api_key.as_deref(), Some("\"[REDACTED]\""));
-    let item: serde_json::Value = serde_json::from_str(&full.items[0]).expect("item");
-    assert_eq!(item["password"], "[REDACTED]");
-    assert_eq!(item["content"], "hi");
+    assert!(api_key.is_none());
+    assert!(full.items.is_empty());
+    assert!(full
+        .fields
+        .iter()
+        .any(|(name, value)| name == "input_items" && value == "1"));
 }
 
 #[test]
@@ -469,7 +477,11 @@ fn upstream_capture_is_skipped_when_client_body_is_unchanged() {
         .load_request_log_payload_full("trc_same", PAYLOAD_STAGE_UPSTREAM)
         .expect("load upstream")
         .expect("upstream exists");
-    assert_eq!(upstream.items.len(), 2);
+    assert!(upstream.items.is_empty());
+    assert!(upstream
+        .fields
+        .iter()
+        .any(|(name, value)| name == "input_items" && value == "2"));
 }
 
 #[test]

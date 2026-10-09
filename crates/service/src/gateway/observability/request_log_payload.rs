@@ -1,15 +1,10 @@
 //! Request payload capture for the request log detail view.
 //!
-//! Two switches (persisted as app settings) control what is stored:
-//!
-//! * redaction (default on): credential-like JSON keys are replaced with
-//!   `[REDACTED]` before anything is written. When off, the body is stored
-//!   exactly as sent upstream.
-//! * preview (default on): only the first 16 KB is kept in
-//!   `request_log_payloads`. When off, the full body is split into
-//!   content-addressed fragments (top-level fields + list items) and stored
-//!   once per distinct fragment, so consecutive requests of a conversation
-//!   only add their new tail.
+//! A mandatory fixed-schema structure summary is applied before database or
+//! spill writes. No conversation text, credentials, tool arguments or encrypted
+//! reasoning is stored, even when the persisted redaction switch is off.
+//! The preview switch selects the existing preview/manifest storage layout;
+//! neither layout stores the original request body.
 //!
 //! Logging must never affect receiving or forwarding a request. The gateway
 //! hot path only builds a job from reference-counted `Bytes`, snapshots the
@@ -43,6 +38,10 @@ mod pipeline;
 mod spill;
 #[path = "request_log_payload_writer.rs"]
 mod writer;
+
+#[path = "request_log_payload_structure.rs"]
+mod structure;
+pub(super) use structure::structure_only_body;
 
 pub(crate) use clear::{
     begin_request_log_payload_clear, finish_request_log_payload_clear,
@@ -432,32 +431,10 @@ pub(crate) fn sanitize_request_payload(body: &[u8]) -> String {
     }
 }
 
-/// Body written to a spill segment for a job that asks for redaction. It
-/// never holds more than the database would store, and preprocessing it
-/// again (preview or split, with redaction) gives exactly the rows the
-/// original body gives:
-/// * JSON: the redacted JSON (redaction is idempotent);
-/// * other UTF-8 text: unchanged, as the database stores it;
-/// * not UTF-8: the preview placeholder in preview mode, the raw bytes in
-///   full mode (stored base64 encoded there).
-///
-/// The caller keeps the hashes and size of the original body separately
-/// and never spills the wire body.
+/// Fixed-schema summary written to every spill segment, regardless of switches.
+/// The caller keeps original hashes/length separately and never spills wire bytes.
 pub(crate) fn redacted_spill_body(job: &RequestLogPayloadJob) -> Bytes {
-    let Ok(text) = std::str::from_utf8(&job.body) else {
-        return if job.preview {
-            Bytes::from_static(NON_UTF8_PREVIEW_PLACEHOLDER.as_bytes())
-        } else {
-            job.body.clone()
-        };
-    };
-    match serde_json::from_str::<Value>(text) {
-        Ok(value) => match serde_json::to_vec(&redact_sensitive_value("", value)) {
-            Ok(redacted) => Bytes::from(redacted),
-            Err(_) => Bytes::from_static(b"null"),
-        },
-        Err(_) => job.body.clone(),
-    }
+    structure::structure_only_body(&job.body)
 }
 
 /// Digests of `job`'s original body and wire bytes, kept next to a

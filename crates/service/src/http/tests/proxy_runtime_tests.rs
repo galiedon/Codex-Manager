@@ -2736,16 +2736,15 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         .expect("original WS frame persisted");
         let original: serde_json::Value =
             serde_json::from_str(&client.payload).expect("client WS JSON");
-        let index = if original["input"] == "hello" { 0 } else { 1 };
+        assert_eq!(original["capture_policy"], "structure_only_v1");
+        assert!(original.get("input").is_none());
+        let index = if original["stream"] == false { 0 } else { 1 };
         if index == 0 {
             assert_eq!(
                 original["stream"], false,
                 "client stage must preserve original transport fields"
             );
-            assert_eq!(
-                original["model"], "gpt-4.1",
-                "client stage must precede model rewrite"
-            );
+            assert!(original.get("model").is_none());
         }
         let attempt = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -2769,10 +2768,11 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
             .find_request_log_payload_by_trace_id(trace_id, "upstream")
             .expect("read upstream WS body")
             .expect("rewritten upstream body persisted");
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&upstream.payload).unwrap(),
-            serde_json::from_str::<serde_json::Value>(&capture.frames[index]).unwrap(),
-        );
+        let summary: serde_json::Value = serde_json::from_str(&upstream.payload).unwrap();
+        assert_eq!(summary["capture_policy"], "structure_only_v1");
+        assert!(summary.get("input").is_none());
+        assert!(summary.get("client_metadata").is_none());
+        assert!(summary["stream"].is_null());
     }
     assert!(
         ws_logs
@@ -3667,10 +3667,10 @@ async fn official_responses_websocket_switches_account_after_initial_send_reset(
         .find_request_log_payload_by_trace_id(&trace_id, &latest.stage)
         .expect("upstream content")
         .expect("reconnected body");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&captured.payload).unwrap(),
-        serde_json::from_str::<serde_json::Value>(&replacement_frame).unwrap(),
-    );
+    let summary: serde_json::Value = serde_json::from_str(&captured.payload).unwrap();
+    assert_eq!(summary["capture_policy"], "structure_only_v1");
+    assert!(summary.get("input").is_none());
+    assert!(summary.get("encrypted_content").is_none());
 
     let _ = client_ws.close(None).await;
     let _ = shutdown_tx.send(());

@@ -134,26 +134,18 @@ fn query_disk_space(dir: &Path) -> Option<(u64, u64)> {
         .map(|disk| (disk.total_space(), disk.available_space()))
 }
 
-fn same_allocation(left: &bytes::Bytes, right: &bytes::Bytes) -> bool {
-    left.as_ptr() == right.as_ptr() && left.len() == right.len()
-}
-
-/// Append one job. A job that asks for redaction is redacted here, before
-/// it reaches the disk, exactly as the database path would store it; only
-/// digests of the original body and wire bytes are kept next to it.
+/// Append one job using the same mandatory structure-only policy as SQLite.
+/// Only digests of the original body and wire bytes are kept next to it.
 fn append_job(store: &mut SpillStore, job: &RequestLogPayloadJob) -> std::io::Result<u64> {
-    let (body, original) = if job.redact {
-        (redacted_spill_body(job), Some(original_digests(job)))
-    } else {
-        (job.body.clone(), None)
-    };
+    let body = redacted_spill_body(job);
+    let original = Some(original_digests(job));
     let meta = SpillRecordMeta {
         trace_id: job.trace_id.clone(),
         stage: job.stage.clone(),
         generation: (job.generation >= 0).then_some(job.generation),
         clear_epoch: job.clear_epoch,
         boot_id: job.boot_id,
-        redact: job.redact,
+        redact: true,
         preview: job.preview,
         conversation_key: job.conversation_key.clone(),
         attempt: job.attempt.as_ref().map(|attempt| SpillAttemptMeta {
@@ -165,18 +157,10 @@ fn append_job(store: &mut SpillStore, job: &RequestLogPayloadJob) -> std::io::Re
         created_at: job.created_at,
         original,
     };
-    // Never spilled with a redacted body (the encoder drops it as well).
-    let wire_body = job
-        .attempt
-        .as_ref()
-        .filter(|attempt| {
-            meta.original.is_none() && !same_allocation(&attempt.wire_body, &job.body)
-        })
-        .map(|attempt| &attempt.wire_body[..]);
     store.append(&SpillRecordRef {
         meta: &meta,
         body: &body,
-        wire_body,
+        wire_body: None,
     })
 }
 

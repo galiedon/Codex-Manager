@@ -170,12 +170,17 @@ fn gateway_stateless_retry_strips_encrypted_content_on_invalid_encrypted_content
             .expect("retry payload persisted");
         let actual = serde_json::from_str::<serde_json::Value>(&captured.payload).unwrap();
         let expected = serde_json::from_slice::<serde_json::Value>(mock_body).unwrap();
+        assert_eq!(actual["capture_policy"], "structure_only_v1");
         assert_eq!(
-            actual,
-            expected,
-            "attempt {} body differs from mock upstream",
-            index + 1
+            actual["input_items"],
+            expected["input"]
+                .as_array()
+                .map(|items| items.len())
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null)
         );
+        assert!(actual.get("input").is_none());
+        assert!(actual.get("instructions").is_none());
     }
 }
 

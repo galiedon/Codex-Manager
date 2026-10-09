@@ -275,7 +275,8 @@ pub fn current_gateway_thread_aware_account_distribution_enabled() -> bool {
     gateway::thread_aware_account_distribution_enabled()
 }
 
-/// Mask credential-like keys in captured request payloads (default on).
+/// Legacy redaction preference. Mandatory structure-only storage always removes
+/// arbitrary request content, even when this preference is off.
 pub fn set_gateway_request_log_payload_redaction_enabled(enabled: bool) -> Result<bool, String> {
     let applied = gateway::set_request_log_payload_redaction_enabled(enabled);
     save_persisted_bool_setting(
@@ -289,8 +290,8 @@ pub fn current_gateway_request_log_payload_redaction_enabled() -> bool {
     gateway::request_log_payload_redaction_enabled()
 }
 
-/// Keep only a 16 KB preview of captured request payloads (default on).
-/// When off, full bodies are stored with conversation-level de-duplication.
+/// Select preview storage (default on), or manifest storage when off.
+/// Both layouts contain only a fixed-schema request structure summary.
 pub fn set_gateway_request_log_payload_preview_enabled(enabled: bool) -> Result<bool, String> {
     let applied = gateway::set_request_log_payload_preview_enabled(enabled);
     save_persisted_bool_setting(

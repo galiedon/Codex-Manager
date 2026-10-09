@@ -949,9 +949,10 @@ pub(crate) fn log_gemini_request_diagnostics(
     if !gemini_trace_diagnostics_enabled() {
         return;
     }
-    let preview_len = body.len().min(super::trace_body_preview_max_bytes());
-    let preview = String::from_utf8_lossy(&body[..preview_len]);
-    let truncated = if body.len() > preview_len {
+    let structure = super::request_log_payload::structure_only_body(body);
+    let preview_len = structure.len().min(super::trace_body_preview_max_bytes());
+    let preview = String::from_utf8_lossy(&structure[..preview_len]);
+    let truncated = if structure.len() > preview_len {
         "true"
     } else {
         "false"
