@@ -21,38 +21,9 @@ pub(crate) struct PassthroughSseCollector {
     pub(crate) saw_terminal: bool,
     pub(crate) terminal_delivered: bool,
     #[allow(dead_code)]
-    pub(crate) terminal_delivery_tail: Vec<u8>,
     pub(crate) terminal_error: Option<String>,
     pub(crate) upstream_error_hint: Option<String>,
     pub(crate) last_event_type: Option<String>,
-}
-
-pub(crate) fn mark_terminal_delivered(
-    usage_collector: &Arc<Mutex<PassthroughSseCollector>>,
-    chunk: &[u8],
-) {
-    let Ok(mut collector) = usage_collector.lock() else {
-        return;
-    };
-    if collector.terminal_delivered {
-        return;
-    }
-    collector.terminal_delivery_tail.extend_from_slice(chunk);
-    const TAIL_LIMIT: usize = 256;
-    if collector.terminal_delivery_tail.len() > TAIL_LIMIT {
-        let keep_from = collector.terminal_delivery_tail.len() - TAIL_LIMIT;
-        collector.terminal_delivery_tail.drain(..keep_from);
-    }
-    let text = String::from_utf8_lossy(&collector.terminal_delivery_tail).to_ascii_lowercase();
-    if !text.contains("response.completed")
-        && !text.contains("response.failed")
-        && !text.contains("response.incomplete")
-        && !text.contains("response.done")
-        && !text.contains("data: [done]")
-    {
-        return;
-    }
-    collector.terminal_delivered = true;
 }
 
 fn elapsed_ms_since(started_at: Instant) -> i64 {

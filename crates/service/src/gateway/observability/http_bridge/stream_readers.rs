@@ -40,8 +40,7 @@ use common::{
 };
 use common::{mark_collector_terminal_success, mark_first_response_ms_on_usage};
 pub(crate) use common::{
-    mark_terminal_delivered, PassthroughSseCollector, SseKeepAliveFrame, UpstreamSseFramePump,
-    UpstreamSseFramePumpItem,
+    PassthroughSseCollector, SseKeepAliveFrame, UpstreamSseFramePump, UpstreamSseFramePumpItem,
 };
 pub(crate) use gemini::GeminiSseReader;
 pub(crate) use images::ImagesFromResponsesSseReader;

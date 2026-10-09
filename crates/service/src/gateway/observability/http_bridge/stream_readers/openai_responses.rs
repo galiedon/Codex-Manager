@@ -1,9 +1,8 @@
 use super::{
-    classify_upstream_stream_read_error, mark_first_response_ms, mark_terminal_delivered,
-    stream_idle_timed_out, stream_idle_timeout_message, stream_reader_disconnected_message,
-    stream_wait_timeout, upstream_hint_or_stream_incomplete_message, Arc, Cursor, Mutex,
-    OpenAIResponsesEvent, OpenAIResponsesOutputTextState, PassthroughSseCollector, Read,
-    SseKeepAliveFrame, SseTerminal,
+    classify_upstream_stream_read_error, mark_first_response_ms, stream_idle_timed_out,
+    stream_idle_timeout_message, stream_reader_disconnected_message, stream_wait_timeout,
+    upstream_hint_or_stream_incomplete_message, Arc, Cursor, Mutex, OpenAIResponsesEvent,
+    OpenAIResponsesOutputTextState, PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal,
 };
 use crate::gateway::upstream::attempt_flow::transport::runtime::upstream_runtime;
 use crate::gateway::upstream::{GatewayByteStream, GatewayByteStreamItem, GatewayStreamResponse};
@@ -16,6 +15,10 @@ use std::time::Instant;
 use tokio::sync::mpsc::Receiver;
 
 const OPENAI_RESPONSES_SSE_CHANNEL_CAPACITY: usize = 128;
+
+#[path = "responses_terminal.rs"]
+mod responses_terminal;
+use responses_terminal::ForwardedResponsesTerminal;
 
 #[derive(Debug)]
 enum OpenAIResponsesSidecarItem {
@@ -115,6 +118,7 @@ pub(crate) struct OpenAIResponsesPassthroughSseReader {
     request_started_at: Instant,
     last_upstream_activity: Instant,
     finished: bool,
+    forwarded_terminal: ForwardedResponsesTerminal,
 }
 
 impl OpenAIResponsesPassthroughSseReader {
@@ -150,6 +154,7 @@ impl OpenAIResponsesPassthroughSseReader {
             request_started_at,
             last_upstream_activity: Instant::now(),
             finished: false,
+            forwarded_terminal: ForwardedResponsesTerminal::default(),
         }
     }
 
@@ -216,6 +221,14 @@ impl OpenAIResponsesPassthroughSseReader {
 
     async fn next_chunk(&mut self) -> std::io::Result<Vec<u8>> {
         self.drain_sidecar_events();
+        // The previous raw chunk (including the entire terminal frame) has been
+        // consumed from out_cursor. Do not wait for provider EOF/keepalives after
+        // the protocol has already ended. This is not a downstream receipt ACK.
+        if self.forwarded_terminal.seen() {
+            self.finish_sidecar().await;
+            self.finished = true;
+            return Ok(Vec::new());
+        }
         match self
             .raw_upstream
             .recv_timeout_async(stream_wait_timeout(self.last_upstream_activity))
@@ -226,7 +239,12 @@ impl OpenAIResponsesPassthroughSseReader {
                 mark_first_response_ms(&self.usage_collector, self.request_started_at);
                 self.drain_sidecar_events();
                 let bytes = bytes.to_vec();
-                mark_terminal_delivered(&self.usage_collector, &bytes);
+                self.forwarded_terminal.feed(&bytes);
+                if self.forwarded_terminal.seen() {
+                    if let Ok(mut collector) = self.usage_collector.lock() {
+                        collector.terminal_delivered = true;
+                    }
+                }
                 Ok(bytes)
             }
             Ok(GatewayByteStreamItem::Eof) => {

@@ -172,6 +172,8 @@ mod local_validation;
 mod metrics;
 #[path = "request/official_responses_http.rs"]
 mod official_responses_http;
+#[path = "request/search_history.rs"]
+mod search_history;
 #[path = "auth/openai_fallback.rs"]
 mod openai_fallback;
 mod protocol_adapter;

@@ -37,7 +37,11 @@ fn ok_response(id: &str) -> String {
     .to_string()
 }
 
-fn seed_openai_compat_gateway(storage: &Storage, platform_key: &str, key_id: &str) -> String {
+pub(super) fn seed_openai_compat_gateway(
+    storage: &Storage,
+    platform_key: &str,
+    key_id: &str,
+) -> String {
     let now = now_ts();
     seed_model_catalog_models(storage, &[MODEL]);
 

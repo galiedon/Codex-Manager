@@ -1972,6 +1972,13 @@ pub(super) fn build_local_validation_result(
         )
     })?;
     let initial_request_value = super::super::parse_request_json_value(&client_body);
+    // Decide from the client shape before defaults/adapters can synthesize tools=[].
+    // Keep client_body and its metadata intact for the existing client capture.
+    let forwarding_body = super::super::search_history::repair_zero_permission_search_history(
+        logical_path.as_str(),
+        client_body.clone(),
+        initial_request_value.as_ref(),
+    );
     let initial_service_tier_diagnostic = initial_request_value
         .as_ref()
         .map(|value| super::super::inspect_service_tier_value(value.get("service_tier")))
@@ -2041,7 +2048,7 @@ pub(super) fn build_local_validation_result(
             request_shape,
         ) = apply_passthrough_request_overrides(
             &logical_path,
-            client_body.to_vec(),
+            forwarding_body.to_vec(),
             &api_key,
             initial_request_meta.service_tier.clone(),
             compact_model_override_for_logical_request.as_deref(),
@@ -2165,7 +2172,7 @@ pub(super) fn build_local_validation_result(
     let passthrough_path = logical_path.clone();
     let mut passthrough_body = apply_passthrough_request_overrides(
         &logical_path,
-        client_body.to_vec(),
+        forwarding_body.to_vec(),
         &api_key,
         initial_request_meta.service_tier.clone(),
         compact_model_override_for_logical_request.as_deref(),
@@ -2211,7 +2218,7 @@ pub(super) fn build_local_validation_result(
         passthrough_body_value_for_validation.as_ref(),
     )
     .map_err(|err| LocalValidationError::new(400, err.message()))?;
-    let original_body = client_body;
+    let original_body = forwarding_body;
     let mut body: Vec<u8> = original_body.to_vec();
     let (mut path, mut response_adapter, mut gemini_stream_output_mode, mut tool_name_restore_map) =
         if effective_protocol_type == crate::apikey_profile::PROTOCOL_OPENAI_COMPAT

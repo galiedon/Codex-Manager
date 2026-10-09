@@ -12,6 +12,8 @@ mod images;
 mod prompt_cache;
 #[path = "gateway_logs/retry_logging.rs"]
 mod retry_logging;
+#[path = "gateway/search_history.rs"]
+mod search_history;
 #[path = "gateway_logs/support.rs"]
 mod support;
 #[path = "gateway_logs/usage_limit_failover.rs"]
